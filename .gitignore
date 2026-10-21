@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
+# Testing & caches
+.pytest_cache/
+.coverage
+htmlcov/
+.tsbuildinfo
+
+# SQLite DB
+lab.db
+lab.db-journal
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Archives
+*.zip
