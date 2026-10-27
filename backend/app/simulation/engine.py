@@ -240,9 +240,6 @@ class NetworkSimulator:
 
             # Update next allowed send time for pacing
             flow.next_allowed_send_time = send_time + pacing_interval
-            if pacing_interval > 0:
-                # If pacing is active, send next packet at pacing interval
-                break
 
     def _handle_router_arrival(self, event: Event):
         pkt: Packet = event.data["packet"]
@@ -329,7 +326,8 @@ class NetworkSimulator:
         self._schedule_event(ack_arrival_at_sender, "SENDER_ACK", pkt.flow_id, data={
             "seq_num": pkt.seq_num,
             "sent_time": pkt.sent_time,
-            "queueing_delay": queueing_delay
+            "queueing_delay": queueing_delay,
+            "is_retransmission": pkt.is_retransmission
         })
 
     def _handle_sender_ack(self, event: Event):
@@ -337,11 +335,16 @@ class NetworkSimulator:
         ack_seq = event.data["seq_num"]
         sent_time = event.data["sent_time"]
         queueing_delay = event.data["queueing_delay"]
+        is_retx = event.data.get("is_retransmission", False)
         
-        rtt_sample = max(0.001, self.current_time - sent_time)
-        flow.rtt_samples_all.append(rtt_sample)
-        flow.rtt_samples_epoch.append(rtt_sample)
-        flow.queueing_delay_epoch.append(queueing_delay)
+        # Karn's Algorithm (RFC 6298): Ignore RTT samples for retransmitted packets
+        if not is_retx:
+            rtt_sample = max(0.001, self.current_time - sent_time)
+            flow.rtt_samples_all.append(rtt_sample)
+            flow.rtt_samples_epoch.append(rtt_sample)
+            flow.queueing_delay_epoch.append(queueing_delay)
+        else:
+            rtt_sample = flow.algo.rtt
         
         # Check if this ACK is in-order or duplicate
         if ack_seq > flow.highest_ack_received:

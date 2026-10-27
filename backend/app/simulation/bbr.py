@@ -18,13 +18,18 @@ class TCPBbr(CongestionControlAlgorithm):
     def __init__(self, mss_bytes: int = 1460, initial_cwnd: float = 10.0):
         super().__init__(mss_bytes, initial_cwnd)
         self.state = CongestionState.STARTUP
-        self.btl_bw: float = 1e6               # bits per second estimate
+        self.btl_bw: float = 10e6              # bits per second initial estimate (10 Mbps)
         self.rt_prop: float = 0.05             # minimum RTT in seconds
         self.rt_prop_stamp: float = 0.0        # when min RTT was last refreshed
 
         # Delivery rate filter over recent rounds
-        self.bandwidth_samples = collections.deque(maxlen=10)
+        self.bandwidth_samples = collections.deque(maxlen=20)
         self.min_rtt_samples = collections.deque(maxlen=20)
+
+        # Inter-ACK and round rate measurement variables
+        self.last_ack_time: float = 0.0
+        self.round_start_time: float = 0.0
+        self.round_delivered_bytes: int = 0
 
         # State machine variables
         self.pacing_gain: float = 2.885        # 2 / ln(2)
@@ -47,13 +52,8 @@ class TCPBbr(CongestionControlAlgorithm):
         if is_duplicate:
             return
 
-        # Measure instantaneous delivery rate: bytes_acked / rtt_sample
         if rtt_sample > 0 and bytes_acked > 0:
-            delivery_rate_bps = (bytes_acked * 8.0) / rtt_sample
-            self.bandwidth_samples.append(delivery_rate_bps)
-            self.btl_bw = max(self.bandwidth_samples)
-
-            # Update RTprop (min RTT)
+            # Update RTprop (minimum physical RTT over 10s window)
             if self.rt_prop == 0 or rtt_sample < self.rt_prop or (now - self.rt_prop_stamp > 10.0):
                 self.rt_prop = rtt_sample
                 self.rt_prop_stamp = now
@@ -61,8 +61,24 @@ class TCPBbr(CongestionControlAlgorithm):
             self.rtt = 0.875 * self.rtt + 0.125 * rtt_sample
             self.min_rtt = self.rt_prop
 
-        # Execute BBR State Machine transitions
-        self._update_state_machine(now)
+            # Measure delivery rate across full round trips (immune to ACK compression)
+
+            # 2. RTT-round aggregate delivery rate measurement
+            self.round_delivered_bytes += bytes_acked
+            if self.round_start_time == 0.0:
+                self.round_start_time = now
+            elif now - self.round_start_time >= max(0.01, self.rt_prop):
+                elapsed = now - self.round_start_time
+                if elapsed > 0 and self.round_delivered_bytes > 0:
+                    round_rate_bps = (self.round_delivered_bytes * 8.0) / elapsed
+                    # Filter out ACK compression bursts: bandwidth cannot grow > 2.0x in a single round
+                    capped_rate = min(self.btl_bw * 2.0, round_rate_bps) if self.btl_bw > 0 else round_rate_bps
+                    self.bandwidth_samples.append(capped_rate)
+                    self.btl_bw = max(self.bandwidth_samples)
+                self.round_start_time = now
+                self.round_delivered_bytes = 0
+                # Execute state machine check once per RTT round
+                self._update_state_machine(now)
 
         # Calculate BDP (Bandwidth-Delay Product in bytes)
         bdp_bytes = (self.btl_bw * self.rt_prop) / 8.0
@@ -72,6 +88,11 @@ class TCPBbr(CongestionControlAlgorithm):
         if self.state == CongestionState.PROBE_RTT:
             self.cwnd = 4.0  # Drain queue completely to measure true propagation delay
             self.pacing_gain = 1.0
+        elif self.state == CongestionState.STARTUP:
+            # Slow start growth until bottleneck rate is reached
+            self.cwnd = min(bdp_packets * 2.885, self.cwnd + 1.0)
+        elif self.state == CongestionState.DRAIN:
+            self.cwnd = max(4.0, bdp_packets * 1.0)
         else:
             self.cwnd = max(4.0, bdp_packets * self.cwnd_gain)
 
