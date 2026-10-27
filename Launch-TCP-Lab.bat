@@ -1,5 +1,5 @@
 @echo off
-title TCP Congestion Control Research Lab Launcher
+title TCP Congestion Control Research Lab
 echo ========================================================
 echo   TCP Congestion Control Research Lab - Auto Launcher
 echo ========================================================
@@ -7,24 +7,35 @@ echo.
 
 cd /d "%~dp0"
 
-echo [1/3] Launching Backend API & Database on port 8000...
-start "TCP Lab Backend" /min cmd /c "cd backend && python -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
+:: Check if Backend (Port 8000) is already active
+netstat -ano | findstr /R /C:":8000 .*LISTENING" > nul
+if %errorlevel% equ 0 (
+    echo [Backend] Port 8000 is already active.
+) else (
+    echo [1/3] Launching FastAPI Backend on port 8000...
+    start "TCP Lab Backend" /min cmd /c "cd /d ""%~dp0backend"" && python -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
+)
 
-echo [2/3] Launching Frontend Interface on port 5173...
-start "TCP Lab Frontend" /min cmd /c "cd frontend && npm run dev"
+:: Check if Frontend (Port 5173) is already active
+netstat -ano | findstr /R /C:":5173 .*LISTENING" > nul
+if %errorlevel% equ 0 (
+    echo [Frontend] Port 5173 is already active.
+) else (
+    echo [2/3] Launching React Dashboard on port 5173...
+    start "TCP Lab Frontend" /min cmd /c "cd /d ""%~dp0frontend"" && npm run dev"
+)
 
-echo [3/3] Waiting for services to connect...
-timeout /t 3 /nobreak > nul
+echo [3/3] Connecting to services...
+timeout /t 2 /nobreak > nul
 
-echo Opening Dashboard in browser...
+echo Opening Dashboard in your default browser...
 start http://localhost:5173
 
 echo.
 echo ========================================================
-echo   All services are connected and ready to present!
+echo   TCP Congestion Control Lab is READY!
 echo   - Dashboard URL: http://localhost:5173
-echo   - Backend API:   http://127.0.0.1:8000
+echo   - Backend Docs:  http://127.0.0.1:8000/docs
 echo   - Database:      Connected (lab.db)
 echo ========================================================
-echo You can minimize this window.
-timeout /t 5 > nul
+timeout /t 4 > nul
