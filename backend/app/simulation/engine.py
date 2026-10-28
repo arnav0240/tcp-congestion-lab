@@ -12,8 +12,9 @@ Models:
 import heapq
 import random
 import math
+import collections
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Deque
 from app.simulation import create_algorithm
 from app.simulation.base import CongestionControlAlgorithm
 
@@ -92,6 +93,7 @@ class NetworkSimulator:
         self.current_bandwidth_mbps = bandwidth_mbps
         self.base_rtt_sec = base_rtt_ms / 1000.0
         self.half_rtt_sec = self.base_rtt_sec / 2.0
+        self.quarter_rtt_sec = self.base_rtt_sec / 4.0
         self.jitter_sec = jitter_ms / 1000.0
         self.loss_rate = packet_loss_rate
         self.queue_limit = queue_limit_packets
@@ -111,7 +113,7 @@ class NetworkSimulator:
         self.event_queue: List[Event] = []
         
         # Router state
-        self.router_queue: List[Packet] = []
+        self.router_queue: Deque[Dict[str, Any]] = collections.deque()
         self.router_busy_until: float = 0.0
         self.total_queue_drops = 0
         self.total_random_drops = 0
@@ -139,9 +141,15 @@ class NetworkSimulator:
         return (packet_bytes * 8.0) / effective_bps
 
     def _get_one_way_prop_delay(self) -> float:
+        delay = self.quarter_rtt_sec
+        if self.jitter_sec > 0:
+            delay += self.rng.uniform(-self.jitter_sec / 2.0, self.jitter_sec / 2.0)
+        return max(0.00025, delay)
+
+    def _get_reverse_ack_prop_delay(self) -> float:
         delay = self.half_rtt_sec
         if self.jitter_sec > 0:
-            delay += self.rng.uniform(-self.jitter_sec, self.jitter_sec)
+            delay += self.rng.uniform(-self.jitter_sec / 2.0, self.jitter_sec / 2.0)
         return max(0.0005, delay)
 
     def run(self) -> Dict[str, Any]:
@@ -288,9 +296,9 @@ class NetworkSimulator:
         })
 
     def _handle_router_transmit_finish(self, event: Event):
-        # Remove head of queue
+        # Remove head of queue in O(1)
         if self.router_queue:
-            self.router_queue.pop(0)
+            self.router_queue.popleft()
             
         pkt: Packet = event.data["packet"]
         queueing_delay = event.data["queueing_delay"]
@@ -320,7 +328,7 @@ class NetworkSimulator:
             flow.goodput_bytes_epoch += MSS_BYTES
 
         # Generate ACK back to sender
-        ack_prop_delay = self._get_one_way_prop_delay()
+        ack_prop_delay = self._get_reverse_ack_prop_delay()
         ack_arrival_at_sender = self.current_time + ack_prop_delay
         
         self._schedule_event(ack_arrival_at_sender, "SENDER_ACK", pkt.flow_id, data={
@@ -353,10 +361,13 @@ class NetworkSimulator:
             flow.highest_ack_received = ack_seq
             flow.duplicate_ack_count = 0
             
-            # Remove acknowledged packets from unacked buffer
-            to_remove = [s for s in flow.unacked_packets if s <= ack_seq]
-            for s in to_remove:
-                del flow.unacked_packets[s]
+            # Remove acknowledged packets from unacked buffer in O(k)
+            while flow.unacked_packets:
+                first_seq = next(iter(flow.unacked_packets))
+                if first_seq <= ack_seq:
+                    del flow.unacked_packets[first_seq]
+                else:
+                    break
             flow.in_flight_packets = len(flow.unacked_packets)
             
             # Notify Congestion Control Algorithm
@@ -371,7 +382,7 @@ class NetworkSimulator:
             # Reset RTO timer
             flow.rto_timer_time = None
             if flow.unacked_packets:
-                oldest_pkt = min(flow.unacked_packets.values(), key=lambda p: p.sent_time)
+                oldest_pkt = next(iter(flow.unacked_packets.values()))
                 flow.rto_timer_time = self.current_time + flow.rto_sec
                 self._schedule_event(flow.rto_timer_time, "RTO_EXPIRED", flow.flow_id, data={"seq_num": oldest_pkt.seq_num})
                 
@@ -395,7 +406,7 @@ class NetworkSimulator:
     def _trigger_fast_retransmit(self, flow: FlowState):
         if not flow.unacked_packets:
             return
-        earliest_seq = min(flow.unacked_packets.keys())
+        earliest_seq = next(iter(flow.unacked_packets))
         old_pkt = flow.unacked_packets[earliest_seq]
         
         flow.total_retransmissions += 1
@@ -426,7 +437,7 @@ class NetworkSimulator:
             flow.rto_sec = min(60.0, flow.rto_sec * 2.0)  # Exponential backoff
             
             # Retransmit earliest packet
-            earliest_seq = min(flow.unacked_packets.keys())
+            earliest_seq = next(iter(flow.unacked_packets))
             old_pkt = flow.unacked_packets[earliest_seq]
             retx_pkt = Packet(
                 packet_id=self.event_seq + 1,

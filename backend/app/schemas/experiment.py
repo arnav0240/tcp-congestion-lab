@@ -24,7 +24,7 @@ class ExperimentCreate(BaseModel):
     jitter_ms: float = Field(0.0, ge=0.0, le=100.0, description="Delay variation jitter (0-100 ms)")
     packet_loss_rate: float = Field(0.0, ge=0.0, le=0.10, description="Random non-congestive packet loss rate (0 - 10%)")
     queue_limit_packets: int = Field(50, ge=10, le=2000, description="Router buffer capacity in packets (10-2000)")
-    duration_seconds: float = Field(15.0, ge=5.0, le=120.0, description="Simulation duration in seconds (5-120 s)")
+    duration_seconds: float = Field(8.0, ge=1.0, le=120.0, description="Simulation duration in seconds (1-120 s)")
     flow_count: int = Field(1, ge=1, le=8, description="Number of concurrent TCP flows per algorithm (1-8)")
     background_traffic_ratio: float = Field(0.0, ge=0.0, le=0.80, description="Cross-traffic intensity consuming bottleneck (0-80%)")
     seed: int = Field(42, description="Random seed for deterministic reproducibility")
